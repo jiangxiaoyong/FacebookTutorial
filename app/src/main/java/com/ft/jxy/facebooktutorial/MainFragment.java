@@ -10,10 +10,12 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.facebook.FacebookRequestError;
 import com.facebook.HttpMethod;
 import com.facebook.Request;
+import com.facebook.RequestAsyncTask;
 import com.facebook.RequestBatch;
 import com.facebook.Response;
 import com.facebook.Session;
@@ -29,6 +31,8 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * Created by jxy on 15/01/15.
@@ -37,8 +41,11 @@ public class MainFragment extends Fragment {
 
     private UiLifecycleHelper uiHelper;
     private static final String TAG = "MainFragment";
+    private Button shareButton;
 
-    private TextView userInfoTextView;
+    private static final List<String> PERMISSIONS = Arrays.asList("publish_actions");
+    private static final String PENDING_PUBLISH_KEY = "pendingPublishReauthorization";
+    private boolean pendingPublishReauthorization = false;
 
     private Session.StatusCallback callback = new Session.StatusCallback() {
         @Override
@@ -63,9 +70,18 @@ public class MainFragment extends Fragment {
         LoginButton authButton = (LoginButton) view.findViewById(R.id.authButton);
         authButton.setFragment(this);
         authButton.setReadPermissions(Arrays.asList("user_location", "user_birthday", "user_photos"));
+        shareButton = (Button) view.findViewById(R.id.shareButton);
+        shareButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                publishStory();
+            }
+        });
 
-        userInfoTextView = (TextView) view.findViewById(R.id.userInfoTextView);
-
+        if (savedInstanceState != null) {
+            pendingPublishReauthorization =
+                    savedInstanceState.getBoolean(PENDING_PUBLISH_KEY, false);
+        }
 
         return view;
     }
@@ -73,80 +89,18 @@ public class MainFragment extends Fragment {
     private void onSessionStateChange(Session session, SessionState state, Exception exception) {
         if (state.isOpened()) {
             Log.i(TAG, "Logged in...");
-            userInfoTextView.setVisibility(View.VISIBLE);
 
+            shareButton.setVisibility(View.VISIBLE);
 
-            /*
-            // Request user data and show the results
-            Request.executeMeRequestAsync(session, new Request.GraphUserCallback() {
-
-                @Override
-                public void onCompleted(GraphUser user, Response response) {
-                    if (user != null) {
-                        // Display the parsed user info
-                        String string = buildUserInfoDisplay(user);
-                        userInfoTextView.setText(string);
-                    }
-                }
-            });
-            */
-
-
-            new Request(session, "me/photos",getRequestParameters(), HttpMethod.GET, new Request.Callback()
-            {
-                @Override
-                public void onCompleted(Response response)
-                {
-
-                    Log.i(TAG, "Result: " + response.toString());
-                    // Process the returned response
-                    GraphObject graphObject = response.getGraphObject();
-                    FacebookRequestError error = response.getError();
-                    if (graphObject != null) {
-                        Log.d(TAG, "GraphObject get data :success");
-                        if (graphObject.getProperty("data") != null) {
-                            Log.d(TAG, "found data object");
-
-                            // Get the data, parse info to get the key/value info
-
-                            JSONObject jsonObject = graphObject
-                                    .getInnerJSONObject();
-                            Log.d(TAG, jsonObject.toString());
-
-
-                            try {
-                                JSONArray array = jsonObject
-                                        .getJSONArray("data");
-                                Log.d(TAG, array.toString());
-
-                                for(int i = 0; i < array.length(); i++)
-                                {
-                                    JSONObject object1 = (JSONObject) array.get(i);
-                                    Log.d(TAG, object1.toString());
-                                    JSONObject object2 = (JSONObject) object1.get("tags");
-                                    Log.d(TAG, object2.toString());
-                                    JSONArray array2 =  object2.getJSONArray("data");
-                                    Log.d(TAG, "tag data" + array2.toString());
-
-                                }
-
-                            } catch (JSONException e) {
-                                e.printStackTrace();
-                            }
-
-
-                        }
-                    }
-
-                }
-            }).executeAsync();
-
-
-
+            if (pendingPublishReauthorization &&
+                    state.equals(SessionState.OPENED_TOKEN_UPDATED)) {
+                pendingPublishReauthorization = false;
+                publishStory();
+            }
 
         } else if (state.isClosed()) {
             Log.i(TAG, "Logged out...");
-            userInfoTextView.setVisibility(View.INVISIBLE);
+            shareButton.setVisibility(View.INVISIBLE);
         }
     }
 
@@ -194,55 +148,77 @@ public class MainFragment extends Fragment {
     @Override
     public void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
+        outState.putBoolean(PENDING_PUBLISH_KEY, pendingPublishReauthorization);
         uiHelper.onSaveInstanceState(outState);
     }
 
-    private String buildUserInfoDisplay(GraphUser user) {
-        StringBuilder userInfo = new StringBuilder("");
-
-        // Example: typed access (name)
-        // - no special permissions required
-        userInfo.append(String.format("Name: %s\n\n",
-                user.getName()));
-
-        // Example: typed access (birthday)
-        // - requires user_birthday permission
-        userInfo.append(String.format("Birthday: %s\n\n",
-                user.getBirthday()));
-
-        // Example: partially typed access, to location field,
-        // name key (location)
-        // - requires user_location permission
-        userInfo.append(String.format("Location: %s\n\n",
-                user.getLocation().getProperty("name")));
-
-        // Example: access via property name (locale)
-        // - no special permissions required
-        userInfo.append(String.format("Locale: %s\n\n",
-                user.getProperty("locale")));
-
-
-        // Example: access via key for array (languages)
-        // - requires user_likes permission
-        JSONArray languages = (JSONArray)user.getProperty("languages");
-        if (languages.length() > 0) {
-            ArrayList<String> languageNames = new ArrayList<String>();
-            for (int i=0; i < languages.length(); i++) {
-                JSONObject language = languages.optJSONObject(i);
-                // Add the language name to a list. Use JSON
-                // methods to get access to the name field.
-                languageNames.add(language.optString("name"));
+    private boolean isSubsetOf(Collection<String> subset, Collection<String> superset) {
+        for (String string : subset) {
+            if (!superset.contains(string)) {
+                return false;
             }
-            userInfo.append(String.format("Languages: %s\n\n",
-                    languageNames.toString()));
+        }
+        return true;
+    }
+
+    private void publishStory() {
+        Session session = Session.getActiveSession();
+
+        if (session != null){
+
+            // Check for publish permissions
+            List<String> permissions = session.getPermissions();
+            if (!isSubsetOf(PERMISSIONS, permissions)) {
+                pendingPublishReauthorization = true;
+                Session.NewPermissionsRequest newPermissionsRequest = new Session
+                        .NewPermissionsRequest(this, PERMISSIONS);
+                session.requestNewPublishPermissions(newPermissionsRequest);
+                return;
+            }
+
+            Bundle postParams = new Bundle();
+            postParams.putString("name", "Facebook SDK for Android");
+            postParams.putString("caption", "Build great social apps and get more installs.");
+            postParams.putString("description", "The Facebook SDK for Android makes it easier and faster to develop Facebook integrated Android apps.");
+            postParams.putString("link", "https://developers.facebook.com");
+            postParams.putString("picture", "https://raw.github.com/fbsamples/ios-3.x-howtos/master/Images/iossdk_logo.png");
+
+            Request.Callback callback= new Request.Callback() {
+                public void onCompleted(Response response) {
+                    JSONObject graphResponse = response
+                            .getGraphObject()
+                            .getInnerJSONObject();
+                    String postId = null;
+                    try {
+                        postId = graphResponse.getString("id");
+                    } catch (JSONException e) {
+                        Log.i(TAG,
+                                "JSON error "+ e.getMessage());
+                    }
+                    FacebookRequestError error = response.getError();
+                    if (error != null) {
+                        Toast.makeText(getActivity()
+                                        .getApplicationContext(),
+                                error.getErrorMessage(),
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(getActivity()
+                                        .getApplicationContext(),
+                                postId,
+                                Toast.LENGTH_LONG).show();
+                    }
+                }
+            };
+
+            Request request = new Request(session, "me/feed", postParams,
+                    HttpMethod.POST, callback);
+
+            RequestAsyncTask task = new RequestAsyncTask(request);
+            task.execute();
         }
 
-        return userInfo.toString();
     }
 
-    private String photoInfo(GraphUser user){
-        StringBuilder string = new StringBuilder("");
-        return String.valueOf(string.toString());
-    }
+
 
 }
